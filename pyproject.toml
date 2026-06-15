@@ -1,0 +1,33 @@
+[project]
+name = "llm-transport"
+version = "0.1.0"
+description = "Provider-neutral LLM transport: our own normalized request/response/stream contract over native httpx wire backends (Anthropic + OpenAI). No SDK, no DB, no rag-core import."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
