@@ -1,0 +1,32 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# Packaging / build
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Lockfile is regenerated in the workspace; keep it out of the standalone repo
+# (remove this line if the standalone repo should pin its own deps)
+# uv.lock
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
