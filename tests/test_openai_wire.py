@@ -9,7 +9,7 @@ import json
 import httpx
 import pytest
 
-from llm_transport.errors import TransportRateLimit, TransportServerError
+from llm_transport.errors import TransportProtocolError, TransportRateLimit, TransportServerError
 from llm_transport.openai_wire import (
     OpenAIWireTransport,
     _to_openai_messages,
@@ -50,7 +50,10 @@ def test_to_openai_messages_roundtrips_tool_use_and_result():
                     {"type": "tool_use", "id": "t1", "name": "search", "input": {"q": "x"}},
                 ],
             },
-            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "res"}]},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "res"}],
+            },
         ],
     )
     assert out[0] == {"role": "system", "content": "SYS"}
@@ -61,7 +64,9 @@ def test_to_openai_messages_roundtrips_tool_use_and_result():
 
 
 def test_to_openai_tools_maps_input_schema():
-    tools = _to_openai_tools([{"name": "read", "description": "d", "input_schema": {"type": "object"}}])
+    tools = _to_openai_tools(
+        [{"name": "read", "description": "d", "input_schema": {"type": "object"}}]
+    )
     assert tools[0]["type"] == "function"
     assert tools[0]["function"]["parameters"] == {"type": "object"}
     assert _to_openai_tools(None) is None and _to_openai_tools([]) is None
@@ -98,7 +103,12 @@ async def test_complete_shapes_response_and_sends_request():
 
     t = _transport(handler)
     r = await t.complete(
-        _req(system="s", tools=[{"name": "read", "description": "", "input_schema": {}}], temperature=0, max_tokens=50)
+        _req(
+            system="s",
+            tools=[{"name": "read", "description": "", "input_schema": {}}],
+            temperature=0,
+            max_tokens=50,
+        )
     )
     assert seen["url"] == "https://x/v1/chat/completions"
     assert seen["auth"] == "Bearer k"
@@ -106,14 +116,20 @@ async def test_complete_shapes_response_and_sends_request():
     assert seen["body"]["messages"][0] == {"role": "system", "content": "s"}
     assert r.stop_reason == "tool_use"
     assert r.content[0].type == "text" and r.content[0].text == "answer"
-    assert r.content[1].type == "tool_use" and r.content[1].name == "read" and r.content[1].input == {"a": 1}
+    assert (
+        r.content[1].type == "tool_use"
+        and r.content[1].name == "read"
+        and r.content[1].input == {"a": 1}
+    )
     assert r.usage.input_tokens == 7 and r.usage.output_tokens == 3
 
 
 @pytest.mark.asyncio
 async def test_complete_maps_length_to_max_tokens():
     def handler(_):
-        return httpx.Response(200, json={"choices": [{"finish_reason": "length", "message": {"content": "cut"}}]})
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "length", "message": {"content": "cut"}}]}
+        )
 
     r = await _transport(handler).complete(_req(max_tokens=5))
     assert r.stop_reason == "max_tokens"
@@ -132,7 +148,21 @@ async def test_complete_empty_choices_returns_empty():
 @pytest.mark.asyncio
 async def test_complete_tool_args_already_dict():
     def handler(_):
-        return httpx.Response(200, json={"choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": [{"id": "t1", "function": {"name": "read", "arguments": {"a": 1}}}]}}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "tool_calls": [
+                                {"id": "t1", "function": {"name": "read", "arguments": {"a": 1}}}
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
 
     r = await _transport(handler).complete(_req())
     assert r.content[0].type == "tool_use" and r.content[0].input == {"a": 1}
@@ -141,7 +171,17 @@ async def test_complete_tool_args_already_dict():
 @pytest.mark.asyncio
 async def test_complete_strips_inlined_think():
     def handler(_):
-        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "<think>reason\n</think>\n\n\nOK"}}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "<think>reason\n</think>\n\n\nOK"},
+                    }
+                ]
+            },
+        )
 
     r = await _transport(handler).complete(_req(max_tokens=50))
     assert r.content[0].text == "OK"
@@ -150,10 +190,43 @@ async def test_complete_strips_inlined_think():
 @pytest.mark.asyncio
 async def test_complete_unterminated_think_drops_to_empty():
     def handler(_):
-        return httpx.Response(200, json={"choices": [{"finish_reason": "length", "message": {"content": "<think>let me"}}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "length", "message": {"content": "<think>let me"}}]
+            },
+        )
 
     r = await _transport(handler).complete(_req())
     assert r.content == []
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_a_string_body_without_exposing_it():
+    def handler(_):
+        return httpx.Response(200, json="gateway diagnostic: bearer secret-value")
+
+    with pytest.raises(TransportProtocolError, match="invalid_response_type") as exc_info:
+        await _transport(handler).complete(_req())
+
+    assert "secret-value" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_string_chunk_without_exposing_it():
+    def handler(_):
+        return httpx.Response(
+            200,
+            content=b'data: "gateway diagnostic: bearer secret-value"\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
+
+    async with _transport(handler).stream(_req()) as stream:
+        with pytest.raises(TransportProtocolError, match="invalid_chunk_type") as exc_info:
+            async for _ in stream.text_stream:
+                pass
+
+    assert "secret-value" not in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -162,7 +235,9 @@ async def test_complete_flattens_system_blocks():
 
     def handler(request):
         seen["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]})
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
+        )
 
     system = [
         {"type": "text", "text": "STABLE", "cache_control": {"type": "ephemeral"}},
@@ -177,7 +252,9 @@ async def test_complete_flattens_system_blocks():
 
 def _stream_handler(chunks):
     def handler(_request):
-        return httpx.Response(200, content=_sse(chunks), headers={"content-type": "text/event-stream"})
+        return httpx.Response(
+            200, content=_sse(chunks), headers={"content-type": "text/event-stream"}
+        )
 
     return handler
 
@@ -187,7 +264,10 @@ async def test_stream_accumulates_text_and_usage():
     chunks = [
         {"choices": [{"finish_reason": None, "delta": {"content": "Hel"}}]},
         {"choices": [{"finish_reason": None, "delta": {"content": "lo"}}]},
-        {"usage": {"prompt_tokens": 5, "completion_tokens": 2}, "choices": [{"finish_reason": "stop", "delta": {"content": None}}]},
+        {
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            "choices": [{"finish_reason": "stop", "delta": {"content": None}}],
+        },
     ]
     acc = ""
     async with _transport(_stream_handler(chunks)).stream(_req(max_tokens=10)) as st:
@@ -202,8 +282,30 @@ async def test_stream_accumulates_text_and_usage():
 @pytest.mark.asyncio
 async def test_stream_reassembles_tool_calls():
     chunks = [
-        {"choices": [{"finish_reason": None, "delta": {"tool_calls": [{"index": 0, "id": "tc1", "function": {"name": "search", "arguments": '{"q":'}}]}}]},
-        {"choices": [{"finish_reason": None, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"hi"}'}}]}}]},
+        {
+            "choices": [
+                {
+                    "finish_reason": None,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "tc1",
+                                "function": {"name": "search", "arguments": '{"q":'},
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "finish_reason": None,
+                    "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"hi"}'}}]},
+                }
+            ]
+        },
         {"choices": [{"finish_reason": "tool_calls", "delta": {"content": None}}]},
     ]
     async with _transport(_stream_handler(chunks)).stream(_req(max_tokens=10)) as st:
@@ -269,7 +371,9 @@ async def test_complete_retries_5xx_then_succeeds():
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(503, text="unavailable")
-        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]})
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
+        )
 
     r = await _transport(handler, max_retries=2).complete(_req())
     assert calls["n"] == 2 and r.content[0].text == "ok"
@@ -303,17 +407,27 @@ async def test_transport_client_over_openai_wire_messages_surface():
                 ),
                 headers={"content-type": "text/event-stream"},
             )
-        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "done"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
 
     client = TransportClient(_transport(handler))
 
     # .messages.create — the legacy seam, with an interpreter-only kwarg dropped
-    r = await client.messages.create(model="m", messages=[{"role": "user", "content": "q"}], max_tokens=5, count_usage=True)
+    r = await client.messages.create(
+        model="m", messages=[{"role": "user", "content": "q"}], max_tokens=5, count_usage=True
+    )
     assert r.content[0].text == "done" and r.usage.input_tokens == 1
 
     # .messages.stream — the legacy ctx-manager seam
     acc = ""
-    async with client.messages.stream(model="m", messages=[{"role": "user", "content": "q"}], max_tokens=5) as st:
+    async with client.messages.stream(
+        model="m", messages=[{"role": "user", "content": "q"}], max_tokens=5
+    ) as st:
         async for d in st.text_stream:
             acc += d
         final = await st.get_final_message()
