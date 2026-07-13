@@ -21,6 +21,16 @@ class TransportConnectionError(TransportError):
     """The connection could not be established or was dropped."""
 
 
+class TransportProtocolError(TransportError):
+    """A successful provider response does not satisfy the consumed wire contract."""
+
+    provider_failure_class = "protocol_incompatible"
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(f"provider protocol error: {code}")
+
+
 class TransportStatusError(TransportError):
     """The provider returned a non-2xx HTTP status."""
 
@@ -44,7 +54,7 @@ def is_retryable(exc: Exception) -> bool:
     Retryable: timeouts, connection drops, 429s, and 5xx. A 4xx other than 429
     is a caller error (bad request, auth) and must not be retried.
     """
-    if isinstance(exc, (TransportTimeout, TransportConnectionError)):
+    if isinstance(exc, (TransportTimeout, TransportConnectionError, TransportProtocolError)):
         return True
     if isinstance(exc, TransportStatusError):
         return exc.status_code == 429 or exc.status_code >= 500

@@ -13,17 +13,34 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
 import httpx
 
 from ._http import make_client, map_request_error, status_error
 from ._retry import with_retries
+from .errors import TransportProtocolError
 from .events import StreamDone, StreamEvent, TextDelta
 from .sse import iter_sse_json
 from .thinkfilter import ThinkTagFilter, strip_think
 from .types import LlmRequest, LlmResponse, TextBlock, ToolUseBlock, Usage
+
+
+def _response_mapping(value: Any, *, stream: bool = False) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TransportProtocolError("invalid_chunk_type" if stream else "invalid_response_type")
+    return value
+
+
+def _response_choices(value: Mapping[str, Any]) -> Sequence[Any]:
+    if "choices" not in value:
+        raise TransportProtocolError("missing_choices")
+    choices = value["choices"]
+    if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes, bytearray)):
+        raise TransportProtocolError("invalid_choices")
+    return choices
+
 
 # ── Anthropic → OpenAI translation (ported from rag_core/llm/client.py) ─────────
 
@@ -38,11 +55,7 @@ def _system_text(system: str | list[dict] | None) -> str | None:
         return None
     if isinstance(system, str):
         return system
-    parts = [
-        b.get("text", "")
-        for b in system
-        if isinstance(b, dict) and b.get("type") == "text"
-    ]
+    parts = [b.get("text", "") for b in system if isinstance(b, dict) and b.get("type") == "text"]
     joined = "\n".join(p for p in parts if p)
     return joined or None
 
@@ -220,13 +233,16 @@ class OpenAIWireTransport:
                 raise status_error(resp.status_code, resp.text)
             return resp.json()
 
-        data = await with_retries(_do, max_retries=self._max_retries)
-        choices = data.get("choices") or []
+        data = _response_mapping(await with_retries(_do, max_retries=self._max_retries))
+        choices = _response_choices(data)
         if not choices:
             return LlmResponse()
-        choice = choices[0]
+        choice = _response_mapping(choices[0])
+        message = choice.get("message")
+        if not isinstance(message, Mapping):
+            raise TransportProtocolError("missing_message")
         return LlmResponse(
-            content=_blocks_from_message(choice.get("message") or {}),
+            content=_blocks_from_message(dict(message)),
             stop_reason=_stop_reason(choice.get("finish_reason")),
             usage=_usage_from(data.get("usage")),
         )
@@ -276,20 +292,23 @@ class _OpenAIStream:
 
     async def _consume(self) -> AsyncIterator[str]:
         assert self._response is not None
-        async for data in iter_sse_json(self._response):
+        async for data in iter_sse_json(self._response, include_non_objects=True):
+            data = _response_mapping(data, stream=True)
             usage = data.get("usage")
             if usage is not None:
                 self._usage = _usage_from(usage)
-            choices = data.get("choices") or []
+            choices = _response_choices(data)
             if not choices:
                 continue
-            choice = choices[0]
+            choice = _response_mapping(choices[0])
             if choice.get("finish_reason"):
                 self._finish_reason = choice["finish_reason"]
             delta = choice.get("delta")
             if delta is None:
                 continue
+            delta = _response_mapping(delta, stream=True)
             for tc in delta.get("tool_calls") or []:
+                tc = _response_mapping(tc, stream=True)
                 slot = self._tool_calls.setdefault(
                     tc.get("index", 0), {"id": "", "name": "", "arguments": ""}
                 )
@@ -297,6 +316,7 @@ class _OpenAIStream:
                     slot["id"] = tc["id"]
                 fn = tc.get("function")
                 if fn is not None:
+                    fn = _response_mapping(fn, stream=True)
                     if fn.get("name"):
                         slot["name"] = fn["name"]
                     args = fn.get("arguments")
