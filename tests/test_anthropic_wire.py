@@ -75,6 +75,30 @@ async def test_complete_request_shape_and_response():
 
 
 @pytest.mark.asyncio
+async def test_complete_uses_configured_anthropic_headers():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["version"] = request.headers.get("anthropic-version")
+        seen["beta"] = request.headers.get("anthropic-beta")
+        return httpx.Response(
+            200,
+            json={"content": [], "stop_reason": "end_turn", "usage": {}},
+        )
+
+    await _transport(
+        handler,
+        anthropic_version="2024-10-22",
+        anthropic_beta="prompt-caching-2024-07-31",
+    ).complete(_req())
+
+    assert seen == {
+        "version": "2024-10-22",
+        "beta": "prompt-caching-2024-07-31",
+    }
+
+
+@pytest.mark.asyncio
 async def test_complete_preserves_cache_usage_fields():
     def handler(_):
         return httpx.Response(200, json={"content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn", "usage": {"input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 50}})
