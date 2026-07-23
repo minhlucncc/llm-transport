@@ -21,6 +21,8 @@ def build_transport(
     api_key: str,
     timeout: float = 120.0,
     max_retries: int = 2,
+    anthropic_version: str = "2023-06-01",
+    anthropic_beta: str | None = None,
 ) -> Transport:
     """Construct the wire transport for a provider ``kind``.
 
@@ -37,5 +39,10 @@ def build_transport(
     from .anthropic_wire import AnthropicWireTransport
 
     return AnthropicWireTransport(
-        base_url=base_url, api_key=api_key, timeout=timeout, max_retries=max_retries
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        max_retries=max_retries,
+        anthropic_version=anthropic_version,
+        anthropic_beta=anthropic_beta,
     )

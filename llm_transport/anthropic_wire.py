@@ -76,6 +76,8 @@ class AnthropicWireTransport:
         timeout: float = 120.0,
         max_retries: int = 2,
         http_client: httpx.AsyncClient | None = None,
+        anthropic_version: str = "2023-06-01",
+        anthropic_beta: str | None = None,
     ) -> None:
         base = (base_url or "https://api.anthropic.com").rstrip("/")
         self._url = f"{base}/v1/messages"
@@ -83,14 +85,19 @@ class AnthropicWireTransport:
         self._timeout = timeout
         self._max_retries = max_retries
         self._client, self._owns_client = make_client(timeout, http_client)
+        self._anthropic_version = anthropic_version.strip() or _ANTHROPIC_VERSION
+        self._anthropic_beta = anthropic_beta.strip() if anthropic_beta else None
 
     @property
     def _headers(self) -> dict[str, str]:
-        return {
+        h: dict[str, str] = {
             "x-api-key": self._api_key,
-            "anthropic-version": _ANTHROPIC_VERSION,
+            "anthropic-version": self._anthropic_version,
             "content-type": "application/json",
         }
+        if self._anthropic_beta:
+            h["anthropic-beta"] = self._anthropic_beta
+        return h
 
     def _build_body(self, req: LlmRequest, *, stream: bool) -> dict:
         body: dict[str, Any] = {
