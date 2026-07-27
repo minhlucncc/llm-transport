@@ -75,6 +75,28 @@ async def test_complete_request_shape_and_response():
 
 
 @pytest.mark.asyncio
+async def test_complete_ai_box_messages_request_includes_bearer_compatibility_header():
+    """AI Box accepts the same tenant key on its OpenAI and Messages routes."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["x_api_key"] = request.headers.get("x-api-key")
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"content": [], "stop_reason": "end_turn", "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    transport = AnthropicWireTransport(
+        base_url="https://api.ai-box.vn",
+        api_key="ai-box-key",
+        http_client=client,
+    )
+
+    await transport.complete(_req())
+
+    assert seen == {"x_api_key": "ai-box-key", "authorization": "Bearer ai-box-key"}
+
+
+@pytest.mark.asyncio
 async def test_complete_preserves_cache_usage_fields():
     def handler(_):
         return httpx.Response(200, json={"content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn", "usage": {"input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 50}})

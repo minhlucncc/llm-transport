@@ -18,6 +18,7 @@ import contextlib
 import json
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -29,6 +30,7 @@ from .types import LlmRequest, LlmResponse, TextBlock, ToolUseBlock, Usage
 
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 4096  # Anthropic requires max_tokens; defend if a caller omits it.
+_AI_BOX_HOST = "api.ai-box.vn"
 
 
 def _stop_reason(reason: str | None) -> str:
@@ -79,6 +81,7 @@ class AnthropicWireTransport:
     ) -> None:
         base = (base_url or "https://api.anthropic.com").rstrip("/")
         self._url = f"{base}/v1/messages"
+        self._uses_ai_box_bearer_compatibility = (urlparse(base).hostname or "").lower() == _AI_BOX_HOST
         self._api_key = api_key
         self._timeout = timeout
         self._max_retries = max_retries
@@ -86,11 +89,16 @@ class AnthropicWireTransport:
 
     @property
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "x-api-key": self._api_key,
             "anthropic-version": _ANTHROPIC_VERSION,
             "content-type": "application/json",
         }
+        if self._uses_ai_box_bearer_compatibility:
+            # AI Box serves Anthropic Messages but authenticates its tenant
+            # token through the same Bearer convention as its OpenAI route.
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
 
     def _build_body(self, req: LlmRequest, *, stream: bool) -> dict:
         body: dict[str, Any] = {
