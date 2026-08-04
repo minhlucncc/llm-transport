@@ -1,9 +1,9 @@
 """``build_transport`` — pick a wire backend from a resolved provider profile.
 
 ``kind`` uses the same string values ``rag_core.llm.provider`` resolves
-(``"anthropic-compatible"`` / ``"openai-compatible"``); the constants are
-re-declared here so this package never imports ``rag_core`` (keeping it pure and
-free of a circular dependency).
+(``"anthropic-compatible"`` / ``"openai-compatible"`` /
+``"gemini-compatible"``); the constants are re-declared here so this package
+never imports ``rag_core`` (keeping it pure and free of a circular dependency).
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from .base import Transport
 
 ANTHROPIC_COMPATIBLE = "anthropic-compatible"
 OPENAI_COMPATIBLE = "openai-compatible"
+GEMINI_COMPATIBLE = "gemini-compatible"
 
 
 def build_transport(
@@ -31,6 +32,13 @@ def build_transport(
         from .openai_wire import OpenAIWireTransport
 
         return OpenAIWireTransport(
+            base_url=base_url, api_key=api_key, timeout=timeout, max_retries=max_retries
+        )
+
+    if kind == GEMINI_COMPATIBLE:
+        from .gemini_wire import GeminiWireTransport
+
+        return GeminiWireTransport(
             base_url=base_url, api_key=api_key, timeout=timeout, max_retries=max_retries
         )
 

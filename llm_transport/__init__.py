@@ -18,7 +18,7 @@ from .errors import (
     is_retryable,
 )
 from .events import StreamDone, StreamEvent, TextDelta
-from .factory import ANTHROPIC_COMPATIBLE, OPENAI_COMPATIBLE, build_transport
+from .factory import ANTHROPIC_COMPATIBLE, GEMINI_COMPATIBLE, OPENAI_COMPATIBLE, build_transport
 from .types import ContentBlock, LlmRequest, LlmResponse, TextBlock, ToolUseBlock, Usage
 
 __all__ = [
@@ -42,6 +42,7 @@ __all__ = [
     "build_transport",
     "ANTHROPIC_COMPATIBLE",
     "OPENAI_COMPATIBLE",
+    "GEMINI_COMPATIBLE",
     # errors
     "TransportError",
     "TransportTimeout",
