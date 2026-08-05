@@ -2,6 +2,9 @@
 
 POSTs ``{base_url}/v1/messages`` with ``x-api-key`` + ``anthropic-version``
 (matching what ``AsyncAnthropic(api_key=...)`` sends — the production default).
+The auth header name is a constructor parameter (default ``"x-api-key"``) so
+per-wire kinds can authenticate differently (D3 — the gemini wire passes
+``"x-goog-api-key"``) without special-casing here.
 ``messages``/``system``/``tools`` are already Anthropic-shaped, so the request
 body is a near pass-through, including ``system`` ``cache_control`` breakpoints.
 
@@ -24,6 +27,7 @@ import httpx
 
 from ._http import make_client, map_request_error, status_error
 from ._retry import with_retries
+from .errors import TransportStatusError
 from .events import StreamDone, StreamEvent, TextDelta
 from .sse import iter_sse_json
 from .types import LlmRequest, LlmResponse, TextBlock, ToolUseBlock, Usage
@@ -78,11 +82,15 @@ class AnthropicWireTransport:
         timeout: float = 120.0,
         max_retries: int = 2,
         http_client: httpx.AsyncClient | None = None,
+        auth_header: str = "x-api-key",
     ) -> None:
         base = (base_url or "https://api.anthropic.com").rstrip("/")
         self._url = f"{base}/v1/messages"
-        self._uses_ai_box_bearer_compatibility = (urlparse(base).hostname or "").lower() == _AI_BOX_HOST
+        self._uses_ai_box_bearer_compatibility = (
+            urlparse(base).hostname or ""
+        ).lower() == _AI_BOX_HOST
         self._api_key = api_key
+        self._auth_header = auth_header
         self._timeout = timeout
         self._max_retries = max_retries
         self._client, self._owns_client = make_client(timeout, http_client)
@@ -90,7 +98,7 @@ class AnthropicWireTransport:
     @property
     def _headers(self) -> dict[str, str]:
         headers = {
-            "x-api-key": self._api_key,
+            self._auth_header: self._api_key,
             "anthropic-version": _ANTHROPIC_VERSION,
             "content-type": "application/json",
         }
@@ -99,6 +107,10 @@ class AnthropicWireTransport:
             # token through the same Bearer convention as its OpenAI route.
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
+
+    def _status_error(self, status_code: int, body: str) -> TransportStatusError:
+        """Map a non-2xx response to the owned taxonomy. Overridable per wire."""
+        return status_error(status_code, body)
 
     def _build_body(self, req: LlmRequest, *, stream: bool) -> dict:
         body: dict[str, Any] = {
@@ -125,7 +137,7 @@ class AnthropicWireTransport:
             except httpx.HTTPError as exc:
                 raise map_request_error(exc) from exc
             if resp.status_code >= 400:
-                raise status_error(resp.status_code, resp.text)
+                raise self._status_error(resp.status_code, resp.text)
             return resp.json()
 
         data = await with_retries(_do, max_retries=self._max_retries)
@@ -165,7 +177,7 @@ class _AnthropicStream:
             if resp.status_code >= 400:
                 body = await resp.aread()
                 await cm.__aexit__(None, None, None)
-                raise status_error(resp.status_code, body.decode("utf-8", "replace"))
+                raise self._t._status_error(resp.status_code, body.decode("utf-8", "replace"))
             return cm, resp
 
         self._cm, self._response = await with_retries(_open, max_retries=self._t._max_retries)
