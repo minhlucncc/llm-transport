@@ -1,9 +1,10 @@
 # CLAUDE.md — llm-transport (Python / uv)
 
 Provider-neutral LLM transport: our **own** normalized request/response/stream
-contract over native `httpx` wire backends — **no vendor SDK**. Two wires:
-Anthropic Messages (near pass-through) and OpenAI chat-completions (does the
-translation). MiniMax / NCC gateways are configured as the OpenAI-compatible kind.
+contract over native `httpx` wire backends — **no vendor SDK**. Three wires:
+Anthropic Messages (near pass-through), OpenAI chat-completions, and Gemini
+native `generateContent` (the latter two translate). MiniMax / NCC gateways are
+configured as the OpenAI-compatible kind.
 
 **Specs:** openspec/specs/retrieval-runtime/spec.md
 **Rationale:** docs/design/0005-retrieval-runtime.md
@@ -14,9 +15,10 @@ translation). MiniMax / NCC gateways are configured as the OpenAI-compatible kin
 |---|---|
 | `base.py` | The contract: `Transport` + `StreamSession` `Protocol`s. `complete(req)` / `stream(req)`. `StreamSession` exposes both the legacy Anthropic shape (`text_stream`, `get_final_message`) and typed `events()`. |
 | `types.py` | Owned normalized dataclasses: frozen `LlmRequest`, `LlmResponse`, `TextBlock`, `ToolUseBlock`, `Usage` (incl. cache-token fields). Request keeps Anthropic block shape. Duck-compatible with `anthropic.types.Message` but **not** imported from `anthropic`. |
-| `factory.py` | `build_transport(*, kind, base_url, api_key, timeout, max_retries)`. Kinds `anthropic-compatible` / `openai-compatible`; Anthropic is the fallback. Re-declares kind strings to avoid importing `rag_core`. |
-| `anthropic_wire.py` | `AnthropicWireTransport` → `{base_url}/v1/messages`, `x-api-key` + `anthropic-version`. Near pass-through; preserves `system` cache_control + cache usage end-to-end. |
+| `factory.py` | `build_transport(*, kind, base_url, api_key, timeout, max_retries)`. Kinds `anthropic-compatible` / `openai-compatible` / `gemini-compatible`; Anthropic is the fallback. Re-declares kind strings to avoid importing `rag_core`. |
+| `anthropic_wire.py` | `AnthropicWireTransport` → `{base_url}/v1/messages`, `x-api-key` + `anthropic-version`. Near pass-through; preserves `system` cache_control + cache usage end-to-end. `auth_header` is a ctor param so per-wire kinds can authenticate differently. |
 | `openai_wire.py` | `OpenAIWireTransport` → `{base_url}/chat/completions`, `Bearer`. Anthropic↔OpenAI translation (messages/tools/tool_choice/finish_reason); applies `<think>` stripping. |
+| `gemini_wire.py` | `GeminiWireTransport` → `{root}/v1beta/models/{model}:generateContent` (`:streamGenerateContent?alt=sse` for streams), `x-goog-api-key`. Anthropic↔Gemini translation (contents/parts, systemInstruction, functionDeclarations + schema sanitizing, functionCall/functionResponse id↔name pairing). |
 | `compat.py` | `TransportClient`/`MessagesFacade`: legacy `client.messages.create/stream(...)` surface over any `Transport` for drop-in cutover. |
 | `errors.py` · `_retry.py` · `_http.py` · `sse.py` · `thinkfilter.py` | Owned error taxonomy + `is_retryable`; backoff retry; httpx plumbing; SSE parser; `<think>` filter. |
 
@@ -52,7 +54,17 @@ through `rag_core.llm`. Free ladder: `bash benchmarks/ci-free-gates.sh`.
 `__init__.py` (public API) → `base.py` (contract) → `types.py` → `factory.py` / `compat.py`, then the
 two wire files. Gotchas:
 - `base_url` handling **differs per wire**: Anthropic appends `/v1/messages`; OpenAI appends only
-  `/chat/completions` to base_url as-is (so gateways without `/v1` work). MiniMax = `openai-compatible` + its gateway base_url.
+  `/chat/completions` to base_url as-is (so gateways without `/v1` work); Gemini normalizes to the
+  API host root (stripping a trailing `/v1`, `/v1beta`, `/v1beta/openai`, or the legacy
+  `/v1beta/anthropic`) and then appends the versioned per-model path. MiniMax = `openai-compatible` + its gateway base_url.
+- **Gemini is native, not a compat shim.** Google serves no Anthropic-Messages surface —
+  `POST /v1beta/anthropic/messages` returns a bare 404 for every credential — and its
+  OpenAI-compat layer rejects `x-goog-api-key` (only `Authorization: Bearer`). Don't "simplify"
+  the gemini wire onto either compat path; both are dead ends for this credential contract.
+- **Gemini quirks the wire absorbs:** function calls carry no id (ids are synthesized and paired
+  back by name), `functionDeclaration` schemas are an OpenAPI subset (unsupported JSON-Schema
+  keywords are dropped, `type` is upper-cased), `finishReason` is `STOP` even for a call (so a
+  seen call decides `tool_use`), and `maxOutputTokens` covers thinking tokens on `gemini-2.5-*`.
 - **`<think>` stripping is OpenAI-wire-only** (MiniMax/DeepSeek-R1/Qwen emit inline CoT); the Anthropic
   wire never surfaces reasoning as text.
 - **Cache usage** (`cache_read/creation_input_tokens`) is preserved end-to-end on the Anthropic wire
